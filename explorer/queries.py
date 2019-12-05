@@ -19,7 +19,6 @@ def top_level_stats(*, table: str, column: str):
             min({column})
         ,   max({column})
         ,   avg({column})
-        ,   stddev({column})
         ,   count(*)
         ,   count_noise(*)
         FROM {table}
@@ -34,7 +33,6 @@ def bucketed_stats(*, table: str, column: str, bucket_size: int):
         ,   min({column})
         ,   max({column})
         ,   avg({column})
-        ,   stddev({column})
         ,   count(*)
         ,   count_noise(*)
         FROM {table}
