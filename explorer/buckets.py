@@ -47,6 +47,11 @@ class Buckets():
             - The returned size may not meet both of the desired criteria. 
             - The min_bucket_count takes priority. 
         '''
+        logging.debug(
+            f'''Estimating bucket size for range {value_range}, 
+                    count {value_count}, 
+                    num buckets {num_buckets}, 
+                    min bucket count {min_bucket_count}''')
         # Estimate lower and upper bounds for the bucket size
         precision_bound = value_range / num_buckets
         size_bound = value_range / (value_count / min_bucket_count)
@@ -55,31 +60,34 @@ class Buckets():
 
         if len(bs_candidates) == 0:
             # No bucket sizes within the range, prioritise the size bound
-            return self._next_after(size_bound)
+            result = self._next_after(size_bound)
         else:
             # Otherwise choose the largest bucket size within the range
-            return max(bs_candidates)
+            result = max(bs_candidates)
 
-            # bs_candidate_lower = self._next_after(lower)
-            # bs_candidate_upper = self._first_before(upper)
-            # if bs_candidate_lower == bs_candidate_upper:
-            #     # There is only one bucket size that falls within the desired range
-            #     return bs_candidate_lower
-            # else:
-            #     # If both estimates fall outside the intended range, choose estimate
-            #     # based on the lower bound
-            #     return bs_candidate_lower
-            #     # Otherwise if the lower estimate is within the bounds, choose it
-            #     elif bs_candidate_lower < upper:
-            #         return bs_candidate_lower
-            #     # Otherwise check that the upper estimate is within bounds, if so, choose it
-            #     elif bs_candidate_upper > lower:
-            #         return bs_candidate_upper
-            #     # If none of these conditions apply, something has gone wrong...
-            #     else:
-            #         logging.error(
-            #             f'Unable to estimate bucket size for range {lower} -> {upper}')
-            #         return 0
+        logging.debug(f'Returning bucket size {result}')
+
+        return result
+        # bs_candidate_lower = self._next_after(lower)
+        # bs_candidate_upper = self._first_before(upper)
+        # if bs_candidate_lower == bs_candidate_upper:
+        #     # There is only one bucket size that falls within the desired range
+        #     return bs_candidate_lower
+        # else:
+        #     # If both estimates fall outside the intended range, choose estimate
+        #     # based on the lower bound
+        #     return bs_candidate_lower
+        #     # Otherwise if the lower estimate is within the bounds, choose it
+        #     elif bs_candidate_lower < upper:
+        #         return bs_candidate_lower
+        #     # Otherwise check that the upper estimate is within bounds, if so, choose it
+        #     elif bs_candidate_upper > lower:
+        #         return bs_candidate_upper
+        #     # If none of these conditions apply, something has gone wrong...
+        #     else:
+        #         logging.error(
+        #             f'Unable to estimate bucket size for range {lower} -> {upper}')
+        #         return 0
 
     def _next_after(self, val):
         return next(v for v in self.buckets if v > val)
