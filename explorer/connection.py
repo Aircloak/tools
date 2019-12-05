@@ -1,23 +1,31 @@
-import asyncio
-import asyncpg
+import psycopg2
+from psycopg2.extras import DictCursor
 import logging
 
 
 class AircloakConnection():
-    def __init__(self, **kwargs):
+    def __init__(self, *, dbname):
         self.user = 'daniel-613C7ADF4535BB56DBCD'
         self.port = 9432
         self.host = 'attack.aircloak.com'
-        self.database = 'gda_banking'
+        self.dbname = dbname
 
-    async def connect(self):
-        self.conn = await asyncpg.connect(user=self.user, host=self.host, port=self.port, database=self.database)
+        logging.debug(
+            f'Connecting to Aircloak: user={self.user}, host={self.host}, port={self.port}, dbname={self.dbname}')
 
-    async def close(self):
-        await self.conn.close()
+        self.conn = psycopg2.connect(
+            user=self.user, host=self.host, port=self.port, dbname=self.dbname, cursor_factory=DictCursor)
 
-    async def run_query(self, query_fn, **query_args):
-        query_str = query_fn(**query_args)
-        logging.debug(f'Querying: {query_str}')
-        result = await self.conn.fetch(query_str)
+    def close(self):
+        self.conn.close()
+
+    def fetch(self, query):
+        logging.debug(f'Sending query: {query.as_string(self.conn)}')
+        with self.conn.cursor() as cur:
+            cur.execute(query)
+            result = {
+                'rows': cur.fetchall(),
+                'labels': [col.name for col in cur.description]
+            }
+
         return result

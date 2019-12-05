@@ -1,68 +1,62 @@
-import asyncio
-import asyncpg
 import logging
 
-from buckets import Buckets
-from connection import AircloakConnection
+from .buckets import Buckets
+from .connection import AircloakConnection
 
-import queries
-
-# assume for now that we want at least 20 values per bucket (valid?)
-# also that the smallest useful bucket size is at 1/100 of the total range
-MAX_BUCKETS = 100
-MIN_BUCKET_SIZE = 20
+from . import queries
 
 
-async def explore_numeric_col(table: str, column: str, max_buckets=MAX_BUCKETS, min_bucket_size=MIN_BUCKET_SIZE):
-    ac = AircloakConnection()
-    await ac.connect()
+class Explorer:
+    def __init__(self, *, dbname):
+        self.stats = {}
+        self.ac = AircloakConnection(dbname=dbname)
 
-    stats = await ac.run_query(queries.top_level_stats, table=table, column=column)
-    distincts = await ac.run_query(queries.top_level_distinct, table=table, column=column)
+    def explore_numeric_col(self, *, table: str, column: str):
+        stats = self.ac.fetch(
+            queries.top_level_stats(table=table, column=column))
 
-    stats = stats[0]
-    count_total = stats['count']
-    suppresed_count = count_suppressed(distincts, 0)
+        distincts = self.ac.fetch(queries.top_level_distinct(
+            table=table, column=column))
 
-    suppressed_ratio = suppresed_count / count_total
+        stats = stats['rows'][0]
+        suppressed_count = count_suppressed(distincts['rows'], column)
 
-    if suppressed_ratio > 0.05:
-        # too many supressed values, lets drill down
-        value_range = stats['max'] - stats['min']
+        suppressed_ratio = suppressed_count / stats['count']
 
-        # Estimate lower and upper bounds for the bucket size
-        bs_lower_bound = value_range / max_buckets
-        bs_upper_bound = value_range / (count_total / min_bucket_size)
+        if suppressed_ratio > 0.05:
+            # too many supressed values, lets drill down
+            value_range = stats['max'] - stats['min']
 
-        bucket_size = Buckets().estimate_bucket_size(bs_lower_bound, bs_upper_bound)
+            bucket_size = Buckets().estimate_bucket_size(
+                value_range, stats['count'])
 
-        bucketed_stats = await ac.run_query(queries.bucketed_stats, table=table, column=column, bucket_size=bucket_size)
+            self.stats[(table, column)] = self.ac.fetch(
+                queries.bucketed_stats(table=table, column=column, bucket_size=bucket_size))
 
-        # TODO: check quality of returned buckets and, if necessary launch more queries.
+            # TODO: check quality of returned buckets and, if necessary launch more queries with adjusted bucket size.
 
-    await ac.close()
+    def histogram(self, *, table, column):
+        stats = self.stats[(table, column)]['rows']
+        return [row['bucket'] for row in stats[1:]], [row['count'] for row in stats[1:]]
 
-    return bucketed_stats
+    def to_dataframe(self, *, table, column):
+        stats = self.stats[(table, column)]
+        return {
+            'data': stats['rows'],
+            'columns': stats['labels'],
+            'index': None,
+        }
+
+    def __del__(self):
+        self.ac.close()
 
 
 def count_suppressed(rows, col, count_col='count'):
     return next(r[count_col] for r in rows if r[col] == None)
 
 
-def run_exp(exp):
-    loop = asyncio.get_event_loop()
-    loop.set_debug(True)
-    return loop.run_until_complete(exp)
-
-
-# if __name__ == "__main__":
-#     async def main():
-#         logging.basicConfig(level=logging.DEBUG)
-#         ac = AircloakConnection()
-#         await ac.connect()
-#         values = await ac.run_query('bucketed', table='loans', column='amount', bucket_size=10000)
-#         logging.debug(values)
-
-#     loop = asyncio.get_event_loop()
-#     loop.set_debug()
-#     loop.run_until_complete(main())
+if __name__ == "__main__":
+    e = Explorer(dbname='gda_banking')
+    e.explore_numeric_col(table='loans', column='amount')
+    x, y = e.histogram(table='loans', column='amount')
+    print(x, y)
