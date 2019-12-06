@@ -48,7 +48,8 @@ class Buckets():
             - The min_bucket_count takes priority. 
         '''
         logging.debug(
-            f'''Estimating bucket size for range {value_range}, 
+            f'''Estimating bucket size for: 
+                    range {value_range}, 
                     count {value_count}, 
                     num buckets {num_buckets}, 
                     min bucket count {min_bucket_count}''')
@@ -57,6 +58,7 @@ class Buckets():
         size_bound = value_range / (value_count / min_bucket_count)
 
         bs_candidates = self.buckets_in_range(size_bound, precision_bound)
+        logging.debug(f'Options are: {bs_candidates}')
 
         if len(bs_candidates) == 0:
             # No bucket sizes within the range, prioritise the size bound
