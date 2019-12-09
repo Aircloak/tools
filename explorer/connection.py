@@ -1,5 +1,5 @@
 import psycopg2
-from psycopg2.extras import DictCursor
+from psycopg2.extras import DictCursor, LoggingConnection
 import logging
 
 
@@ -14,14 +14,17 @@ class AircloakConnection():
             f'Connecting to Aircloak: user={self.user}, host={self.host}, port={self.port}, dbname={self.dbname}')
 
         self.conn = psycopg2.connect(
-            user=self.user, host=self.host, port=self.port, dbname=self.dbname, cursor_factory=DictCursor)
+            user=self.user, host=self.host, port=self.port, dbname=self.dbname,
+            connection_factory=LoggingConnection)
+
+        self.conn.initialize(logging.Logger("pgconn"))
 
     def close(self):
         self.conn.close()
 
     def fetch(self, query):
         logging.debug(f'Sending query: {query.as_string(self.conn)}')
-        with self.conn.cursor() as cur:
+        with self.conn.cursor(cursor_factory=DictCursor) as cur:
             cur.execute(query)
             result = {
                 'rows': cur.fetchall(),
