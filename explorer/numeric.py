@@ -15,8 +15,8 @@ class Explorer:
         stats = self.ac.fetch(
             queries.top_level_stats(table=table, column=column))
 
-        distincts = self.ac.fetch(queries.top_level_distinct(
-            table=table, column=column))
+        distincts = self.ac.fetch(
+            queries.top_level_distinct(table=table, column=column))
 
         stats = stats['rows'][0]
         suppressed_count = count_suppressed(distincts['rows'], column)
@@ -27,11 +27,16 @@ class Explorer:
             # too many supressed values, lets drill down
             value_range = stats['max'] - stats['min']
 
-            bucket_size = Buckets().estimate_bucket_size(
+            buckets = Buckets()
+            bucket_size = buckets.estimate_bucket_size(
                 value_range, stats['count'])
 
-            self.stats[(table, column)] = self.ac.fetch(
-                queries.bucketed_stats(table=table, column=column, bucket_size=bucket_size))
+            bucket_sizes = [buckets.first_before(bucket_size),
+                            bucket_size,
+                            buckets.next_after(bucket_size)]
+
+            query_result = self.ac.fetch(
+                queries.multi_bucket_stats(table=table, column=column, buckets=bucket_sizes))
 
             # TODO: check quality of returned buckets and, if necessary launch more queries with adjusted bucket size.
 
