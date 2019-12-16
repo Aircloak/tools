@@ -9,7 +9,6 @@ def top_level_distinct(*, table: str, column: str):
         ,   count(*)
         FROM {table}
         GROUP BY 1
-        ORDER BY 2 DESC
     ''').format(table=sql.Identifier(table), column=sql.Identifier(column))
 
 
@@ -40,10 +39,6 @@ def bucketed_stats(*, table: str, column: str, bucket_size: int):
     ''').format(table=sql.Identifier(table), column=sql.Identifier(column), bucket_size=sql.Literal(bucket_size))
 
 
-def metrics(metrics):
-    return sql.Composed(f'{metric}({{column}})' for metric in metrics).join('\n, ')
-
-
 def multi_bucket_stats(*, table: str, column: str, buckets: list):
     buckets_sql = sql.Composed(
         sql.SQL('bucket({column} by {bucket_size}) as {label}').format(
@@ -52,17 +47,19 @@ def multi_bucket_stats(*, table: str, column: str, buckets: list):
             column=sql.Identifier(column))
         for bucket_size in buckets).join('\n, ')
 
-    return sql.Composed([
-        sql.SQL('SELECT\n'),
-        buckets_sql,
-        sql.SQL('''
-            ,   min({column})
-            ,   max({column})
-            ,   avg({column})
-            ,   count(*)
-            ,   count_noise(*)
-            FROM {table}
-            GROUP BY GROUPING SETS ({sets})
-        ''').format(table=sql.Identifier(table), column=sql.Identifier(column),
-                    sets=sql.SQL(', ').join(sql.Literal(i+1) for i in range(len(buckets))))
-    ])
+    return sql.SQL('''
+    SELECT
+        {buckets}
+    ,   count(*)
+    ,   count_noise(*)
+    ,   min({column})
+    ,   max({column})
+    ,   avg({column})
+    FROM {table}
+    GROUP BY GROUPING SETS ({sets})
+    ''').format(
+        buckets=buckets_sql,
+        column=sql.Identifier(column),
+        table=sql.Identifier(table),
+        sets=sql.SQL(', ').join(sql.Literal(i+1) for i in range(len(buckets)))
+    )
