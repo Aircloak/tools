@@ -101,7 +101,7 @@ def first_before(val):
 
 
 def buckets_smaller_than(val):
-    return (v for v in BUCKETS if v < val)
+    return (v for v in reversed(BUCKETS) if v < val)
 
 
 def buckets_larger_than(val):
