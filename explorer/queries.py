@@ -8,6 +8,7 @@ def top_level_distinct(*, table: str, column: str):
             {column}
         ,   count(*)
         FROM {table}
+        WHERE {column} IS NOT NULL
         GROUP BY 1
     ''').format(table=sql.Identifier(table), column=sql.Identifier(column))
 
@@ -56,6 +57,7 @@ def multi_bucket_stats(*, table: str, column: str, buckets: list):
     ,   max({column})
     ,   avg({column})
     FROM {table}
+    WHERE {column} IS NOT NULL
     GROUP BY GROUPING SETS ({sets})
     ''').format(
         buckets=buckets_sql,
