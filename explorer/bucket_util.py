@@ -108,10 +108,23 @@ def buckets_larger_than(val):
     return (v for v in BUCKETS if v > val)
 
 
-def buckets_in_range(lo, hi) -> set:
+def buckets_in_range(lo, hi):
     smaller_than_hi = set(buckets_smaller_than(hi))
     larger_than_lo = set(buckets_larger_than(lo))
-    return smaller_than_hi & larger_than_lo
+    return list(smaller_than_hi & larger_than_lo)
+
+
+def buckets_with_base(bases):
+    return (v for v in BUCKETS if base(v) in bases)
+
+
+def base(val):
+    base = val
+    while base > 10:
+        base //= 10
+    while base < 1:
+        base *= 10
+    return int(base)
 
 
 if __name__ == "__main__":
