@@ -3,11 +3,14 @@ from . import bucket_util as bu
 
 
 class BucketTree:
-    def __init__(self, root_bucket, root_data):
-        self.root_bucket = root_bucket
-        self.buckets_by_level = {
-            root_bucket: root_data
+    def __init__(self, root_bucket_size, root_data):
+        self._root_bucket_size = root_bucket_size
+        self._buckets_by_level = {
+            root_bucket_size: root_data
         }
+
+    def buckets_at_level(self, level):
+        return self._buckets_by_level.get(level)
 
     def insert_query_result(self, bucket_size, meta_data, query_result):
         '''Insert the result of a bucketed query
@@ -16,44 +19,46 @@ class BucketTree:
         :meta_data: A dict containing extra data about this level of buckets
         :param query_result: Should be a list of ((bucket_size, lower_bound), bucket_data) 
         '''
-        assert bucket_size < self.root_bucket,
-        "Can't insert a bucket level above the root"
+        assert bucket_size < self._root_bucket_size, "Can't insert a bucket level above the root"
 
-        assert bucket_size < min(self.buckets_at_level.keys()),
-        "Inserting a bucket level above the lowest level is not yet supported"
+        assert bucket_size < min(self._buckets_by_level.keys(
+        )), "Inserting a bucket level above the lowest level is not yet supported"
 
         bl = BucketLevel(bucket_size=bucket_size,
                          meta_data=meta_data, query_result=query_result)
 
-        self.buckets_by_level.update({bucket_size: bl})
+        self._buckets_by_level.update({bucket_size: bl})
 
     def get_bucket(self, bucket):
-        bucket = None
+        result = None
         level = self.buckets_at_level(bucket.size)
         if level is None:
-            bucket = self.try_smaller_buckets(bucket)
+            result = self.try_smaller_buckets(bucket)
         else:
-            bucket = level.find_bucket(bucket)
+            result = level.find_bucket(bucket)
 
-        if bucket is None:
+        if result is None:
             # there must be a gap in the buckets (or bucket is out of range)
             # check higher levels
             # lower levels will be empty if this level is empty
-            bucket = self.try_larger_buckets(bucket)
+            result = self.try_larger_buckets(bucket)
 
-        return bucket
+        return result
 
     def try_larger_buckets(self, bucket):
         available_levels = [
-            level for level in self.buckets_by_level.keys() if level > bucket.size]
+            level for level in self._buckets_by_level.keys() if level > bucket.size]
         if len(available_levels) == 0:
-            return self.top_level_stats
+            return self.root_bucket()
         else:
             max(available_levels)
 
+    def root_bucket(self):
+        return self._buckets_by_level[self._root_bucket_size]
+
     def try_smaller_buckets(self, bucket):
         available_levels = [
-            level for level in self.buckets_by_level.keys() if level < bucket.size]
+            level for level in self._buckets_by_level.keys() if level < bucket.size]
         if len(available_levels) == 0:
             return None
 
@@ -69,19 +74,21 @@ class BucketTree:
         assert level > bucket.size, "Cannot interpolate from smaller buckets. Merge instead."
         pass
 
-    def buckets_at_level(self, level):
-        return self.buckets_by_level.get(level)
-
 
 class BucketLevel:
     '''Container class for buckets of the same size
     '''
 
     def __init__(self, *, bucket_size, meta_data, query_result):
+        '''
+        :param bucket_size: The bucket size at this level
+        :param meta_data: Metadata associated with this bucket level 
+        :param query_result: Should be a list of ((bucket_size, lower_bound), bucket_data) 
+        '''
         self.bucket_size = bucket_size
         self.meta_data = meta_data
-        self.buckets = dict([(lower_bound, Bucket(bucket_size, lower_bound, bucket_data))
-                             for ((bucket_size, lower_bound), bucket_data) in query_result])
+        self.buckets = dict([(lower_bound, Bucket(bs, lower_bound, bucket_data))
+                             for ((bs, lower_bound), bucket_data) in query_result if bs == bucket_size])
 
     def find_bucket(self, bucket_size, lower_bound):
         if bucket_size != self.bucket_size:
@@ -101,7 +108,7 @@ class Bucket:
     def __init__(self, bucket_size, lower_bound, bucket_data=None):
         self.size = bucket_size
         self.lower_bound = lower_bound
-        self.data = data
+        self.data = bucket_data
 
     def __eq__(self, other):
         return self.size == other.size and self.lower_bound == other.lower_bound
@@ -133,16 +140,16 @@ class Bucket:
             raise ValueError(
                 f'Invalid bucket size for splitting: {self.size}.')
 
-        return split_to_size(self, children_size)
+        return self.split_to_size(children_size)
 
-    def split_to_size(smaller_size):
+    def split_to_size(self, smaller_size):
         '''Split a bucket into multiple buckets of a smaller size
         '''
         if smaller_size >= self.size:
             raise ValueError(
                 "Can't split a bucket into a larger bucket size")
 
-        if bucket.size % smaller_size != 0:
+        if self.size % smaller_size != 0:
             # return None to signal that the desired bucket size doesn't fit
             return None
 
