@@ -17,7 +17,7 @@ class AircloakConnection():
             user=self.user, host=self.host, port=self.port, dbname=self.dbname,
             connection_factory=LoggingConnection)
 
-        self.conn.initialize(logging.Logger("pgconn"))
+        self.conn.initialize(logging.getLogger(self.__class__.__name__))
 
     def close(self):
         self.conn.close()
