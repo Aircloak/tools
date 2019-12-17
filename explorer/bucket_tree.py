@@ -64,16 +64,32 @@ class BucketLevel:
     '''Container class for buckets of the same size
     '''
 
-    def __init__(self, *, bucket_size, buckets, metadata=None):
+    def __init__(self, *, bucket_size, buckets, metadata=None, parent_level=None):
         '''
         :param bucket_size: The bucket size at this level
         :param metadata: Metadata associated with this bucket level 
         :param buckets: Should be a list of Bucket
+        :param parent: If the parent is not provided, fill in gaps between buckets
+            with empty buckets (count = 0), otherwise interpolate missing buckets. 
         '''
         self.bucket_size = bucket_size
         self.metadata = metadata
+        if parent_level is None:
+            fake_lo = min(bucket.lower_bound for bucket in buckets)
+            fake_hi = max(bucket.upper_bound() for bucket in buckets)
+            fake_count = sum(bucket.data.count for bucket in buckets)
+            parent_level = [
+                Bucket(fake_hi - fake_lo, fake_lo, {'count': fake_count, 'min': fake_lo, 'max': fake_hi})]
+
+        interpolated = []
+        bucket_iter = iter(buckets)
+        for parent_bucket in parent_level:
+            children = list(
+                takewhile(lambda small: parent_bucket.contains(small), bucket_iter))
+            interpolated += parent_bucket.interpolate_children(children)
+
         self.buckets = dict([(bucket.lower_bound, bucket)
-                             for bucket in buckets if bucket.size == bucket_size])
+                             for bucket in interpolated])
 
     def get_bucket(self, bucket_size, lower_bound):
         if bucket_size != self.bucket_size:
@@ -99,7 +115,7 @@ class Bucket:
     def __init__(self, bucket_size, lower_bound, bucket_data=None):
         self.size = bucket_size
         self.lower_bound = lower_bound
-        self.data = bucket_data
+        self.data = BucketData(bucket_data)
 
     def __eq__(self, other):
         return self.size == other.size and self.lower_bound == other.lower_bound
@@ -127,8 +143,37 @@ class Bucket:
     def upper_bound(self):
         return self.lower_bound + self.size
 
-    def contains(self, other: Bucket):
-        return self.lower_bound >= other.lower_bound and self.upper_bound() < other.upper_bound()
+    def contains(self, other):
+        return self.lower_bound >= other.lower_bound and self.upper_bound() <= other.upper_bound()
+
+    def interpolate_children(self, small_buckets: List[Bucket]):
+        '''Interpolate gaps in small buckets from a larger one. 
+        '''
+        small_bucket_size = small_buckets[0].size
+        assert self.size % small_bucket_size == 0, f'Bucket {self.size} does not divide exactly into buckets of size {small_bucket_size}'
+
+        small_buckets_expected_num = self.size / small_bucket_size
+        if small_buckets_expected_num == len(small_buckets):
+            return small_buckets
+
+        expected_lower_bounds = [self.lower_bound + i * small_bucket_size
+                                 for i in range(small_buckets_expected_num)]
+        provided_lower_bounds = [
+            bucket.lower_bound for bucket in small_buckets]
+
+        missing_lower_bounds = set(expected_lower_bounds) - \
+            set(provided_lower_bounds)
+
+        missing_total = self.data.count - \
+            sum(bucket.data.count for bucket in small_buckets)
+        count_per_bucket = missing_total / len(missing_lower_bounds)
+
+        synthetic_buckets = [Bucket(small_bucket_size, lower_bound, {
+                                    'count': count_per_bucket}) for lower_bound in missing_lower_bounds]
+
+        small_buckets += synthetic_buckets
+        small_buckets.sort(key=lambda bucket: bucket.lower_bound)
+        return small_buckets
 
 
 class BucketData:
@@ -144,45 +189,3 @@ class BucketData:
 
     def __str__(self):
         return f'BucketData(count: {self.count}, min: {self.min}, max: {self.max})'
-
-
-def interpolate_children(big_bucket: Bucket,
-                         small_buckets: List[Bucket]):
-    '''Interpolate gaps in small buckets from a larger one. 
-    '''
-    small_bucket_size = small_buckets[0].size
-    assert big_bucket.size % small_bucket_size == 0, f'Big bucket {big_bucket.size} does not divide exactly into small buckets of size {small_bucket_size}'
-
-    small_buckets_expected_num = big_bucket.size / small_bucket_size
-    if small_buckets_expected_num == len(small_buckets):
-        return small_buckets
-
-    expected_lower_bounds = [big_bucket.lower_bound + i * small_bucket_size
-                             for i in range(small_buckets_expected_num)]
-    provided_lower_bounds = [bucket.lower_bound for bucket in small_buckets]
-
-    missing_lower_bounds = set(expected_lower_bounds) - \
-        set(provided_lower_bounds)
-
-    missing_total = big_bucket.data.count - \
-        sum(bucket.data.count for bucket in small_buckets)
-    count_per_bucket = missing_total / len(missing_lower_bounds)
-
-    synthetic_buckets = [Bucket(small_bucket_size, lower_bound, {
-                                'count': count_per_bucket}) for lower_bound in missing_lower_bounds]
-
-    small_buckets += synthetic_buckets
-    small_buckets.sort(key=lambda bucket: bucket.lower_bound)
-    return small_buckets
-
-
-def interpolate_next_level(big_buckets: BucketLevel, small_buckets_incomplete: List[Bucket]) -> BucketLevel:
-    next_level = next(bu.levels_below(big_buckets.bucket_size))
-    small_buckets_incomplete.sort(key=lambda bucket: bucket.lower_bound)
-    completed_buckets = []
-    for big_bucket in big_buckets:
-        children = list(
-            takewhile(lambda small: big_bucket.contains(small), small_buckets_incomplete))
-        completed_buckets += interpolate_children(big_bucket, children)
-
-    return BucketLevel()
