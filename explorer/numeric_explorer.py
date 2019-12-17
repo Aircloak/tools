@@ -41,12 +41,10 @@ class NumericColumnExplorer:
 
         # Choose buckets starting ~1/10th the full range,
         # (three bucket sizes is roughly equivalent to a factor of 10)
-        # The following arcane slice incantation drops the top two bucket sizes and
-        # retains every other bucket size up to three in total...
-        # For example, if the bucket sizes are
-        # [10, 20, 50, 100, *200*, 500, *1000*, 2000, *5000*, 10000, 20000]
-        # it will retain: [5000, 1000, 200]
-        buckets = list(bucket_util.buckets_smaller_than(data_range))[-3:-9:-2]
+        # Drop the first two bucket sizes smaller than the range and retain every other
+        # bucket size smaller than this. Take the first three of these for the initial
+        # query.
+        buckets = list(bucket_util.buckets_smaller_than(data_range))[2::2][:3]
 
         self.explore(set(buckets))
 
