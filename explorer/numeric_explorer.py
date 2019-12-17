@@ -77,7 +77,11 @@ class NumericColumnExplorer:
                                       ] = row[len(bucket_sizes):]
                     break
             else:
-                # No bucket_XXX column was filled, so this is suppressed data.
+                # HACK ALERT: No bucket_XXX column was filled. This can mean one of two things:
+                # Either 1. The data was suppressed ("star rows')
+                #     OR 2. All three columns are NULL (ie. no data to be bucketed)
+                # The query has been filtered using 'WHERE {column} IS NOT NULL' so assume
+                # that any NULL rows are in fact suppressed columns
                 suppressed.append(row['count'])
 
         # Bigger buckets mean fewer suppressed rows, so we can assume that the smallest
