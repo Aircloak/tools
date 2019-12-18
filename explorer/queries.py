@@ -2,6 +2,18 @@ import logging
 from psycopg2 import sql
 
 
+def column_info(*, table: str):
+    return sql.SQL('''
+        SHOW COLUMNS FROM {table}
+    ''').format(table=sql.Identifier(table))
+
+
+def table_info():
+    return sql.SQL('''
+        SHOW TABLES
+    ''')
+
+
 def top_level_distinct(*, table: str, column: str):
     return sql.SQL('''
         SELECT
