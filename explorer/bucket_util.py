@@ -120,7 +120,7 @@ def buckets_with_base(bases):
 
 def base(val):
     base = val
-    while base > 10:
+    while base >= 10:
         base //= 10
     while base < 1:
         base *= 10
