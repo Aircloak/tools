@@ -1,9 +1,10 @@
 from itertools import count
-from collections import namedtuple
+from collections import namedtuple, defaultdict
 import logging
 
 from . import queries
 from . import bucket_util
+from . import bucket_tree as bt
 
 
 class NumericColumnExplorer:
@@ -12,53 +13,41 @@ class NumericColumnExplorer:
         self.column = column
         self.aircloak = aircloak_connection
 
-        self._count = 0
-        self._explored_buckets = set([])
-        self._suppressed_counts = {}
-        self._bucket_data = {}
-        self._column_labels = []
+        column_type = self.aircloak.column_info(table, column).type
+        assert column_type in [
+            'integer', 'real'], f'NumericColumnExplorer can only deal with numeric columns but {self.column} is of type {column_type}'
 
-        self._initialise()
+        self._top_level_stats = self.aircloak.fetch(
+            queries.top_level_stats(table=self.table, column=self.column))['rows'][0]
 
-    def _initialise(self):
-        stats = self.aircloak.fetch(
-            queries.top_level_stats(table=self.table, column=self.column))
-
-        distincts = self.aircloak.fetch(
+        self._distincts = self.aircloak.fetch(
             queries.top_level_distinct(table=self.table, column=self.column))
 
-        stats = stats['rows'][0]
-        suppressed_count = count_suppressed(distincts['rows'], self.column)
+        self._suppressed_count = next(
+            r['count'] for r in self._distincts['rows'] if r[self.column] == None)
 
-        self._suppressed_counts[0] = suppressed_count
-        self._count = stats['count']
+        self._suppressed_ratio = self._suppressed_count / \
+            self._top_level_stats['count']
 
-        # If there are hardly any suppressed values, bucketing is futile.
-        if self.suppressed_ratio(0) < 0.02:
-            return
+        self._data_range = self._top_level_stats['max'] - \
+            self._top_level_stats['min']
 
-        data_range = stats['max'] - stats['min']
+        self._bucket_tree = bt.BucketTree(
+            self._data_range, self._distincts, self._top_level_stats['count'], self._suppressed_count)
 
-        # Choose buckets starting ~1/10th the full range,
-        # (three bucket sizes is roughly equivalent to a factor of 10)
-        # Drop the first two bucket sizes smaller than the range and retain every other
-        # bucket size smaller than this. Take the first three of these for the initial
-        # query.
-        buckets = list(bucket_util.buckets_smaller_than(data_range))[2::2][:3]
+        self._column_labels = []
 
-        self.explore(set(buckets))
-
-    def explore(self, buckets: set):
-        to_explore = buckets - self._explored_buckets
+    def explore(self, depth=3):
+        to_explore = self._bucket_tree.next_levels(depth)
 
         query_result = self.aircloak.fetch(queries.multi_bucket_stats(
             table=self.table, column=self.column, buckets=to_explore))
 
         logging.debug("Received query results, processing...")
-        self._process_query_result(to_explore, query_result)
-        logging.debug("... finished processing query results.")
 
-        self._explored_buckets |= buckets
+        self._process_query_result(to_explore, query_result)
+
+        logging.debug("... finished processing query results.")
 
     def _process_query_result(self, bucket_sizes, query_result):
         '''Add the bucket size and bucket lower bound columns to each row
@@ -67,43 +56,35 @@ class NumericColumnExplorer:
             self._column_labels = query_result['labels'][len(bucket_sizes):]
 
         suppressed = []
+        bucket_data = defaultdict(list)
         for row in query_result['rows']:
             for (bs_label, bs) in [('bucket_' + str(bs), bs) for bs in bucket_sizes]:
                 if row[bs_label] is not None:
                     # Note: row[bs_label] is the lower bound of the bucket, bs is the bucket size
-                    self._bucket_data[(bs, row[bs_label])
-                                      ] = row[len(bucket_sizes):]
+                    bucket_data[bs].append(
+                        bt.Bucket(bs, row[bs_label], row[len(bucket_sizes):]))
                     break
             else:
                 # HACK ALERT: No bucket_XXX column was filled. This can mean one of two things:
                 # Either 1. The data was suppressed ("star rows')
                 #     OR 2. All three columns are NULL (ie. no data to be bucketed)
                 # The query has been filtered using 'WHERE {column} IS NOT NULL' so assume
-                # that any NULL rows are in fact suppressed columns
+                # that any NULL rows are in fact STAR (suppressed) columns
                 suppressed.append(row['count'])
 
         # Bigger buckets mean fewer suppressed rows, so we can assume that the smallest
         # number of suppressed rows match the largest bucket sizes.
-        self._suppressed_counts.update(
-            zip(sorted(bucket_sizes), sorted(suppressed, reverse=True)))
+        for bs, sup in zip(sorted(bucket_sizes, reverse=True), sorted(suppressed)):
+            self._bucket_tree.insert_query_result(
+                bs, bucket_data[bs], suppressed=sup)
 
-        pass
-
-    def suppressed_ratio(self, bucket_size):
-        return self._suppressed_counts[bucket_size] / self._count
-
-    def extract_to_dataframe(self):
+    def extract_to_dataframe(self, bucket_sizes=[]):
         # reshape the data and return args for pandas dataframe contructor
-        indices = ['bucket_size', 'lower_bound']
+
         return {
-            'data': [[*k, *v] for k, v in self._bucket_data.items()],
-            'columns': [*indices, *self._column_labels],
-            # 'index': indices,
+            'data': self._bucket_tree.get_buckets(bucket_sizes),
+            'columns': ['bucket_size', 'lower_bound', *self._column_labels],
         }
-
-
-def count_suppressed(rows, col_name_or_index, count_col='count'):
-    return next(r[count_col] for r in rows if r[col_name_or_index] == None)
 
 
 if __name__ == "__main__":
@@ -113,5 +94,7 @@ if __name__ == "__main__":
 
     e = NumericColumnExplorer(aircloak_connection=AircloakConnection(dbname='GiveMeSomeCredit'),
                               table='loans', column='MonthlyIncome')
+
+    e.explore()
 
     e.extract_to_dataframe()

@@ -4,48 +4,50 @@ from . import bucket_util as bu
 from itertools import takewhile, dropwhile
 
 
+'''TREE_BASES determines the bucket sizes that are used to build the tree. 
+[1, 5] means that base-1 and base-5 buckets are used, eg: 500->100->50->10 etc
+'''
+TREE_BASES = [1, 5]
+
+
 class BucketTree:
-    def __init__(self, root_bucket_size, root_bucket):
-        self._root_bucket_size = root_bucket_size
-        self._buckets_by_level = {
-            root_bucket_size: BucketLevel(
-                bucket_size=root_bucket_size, buckets=[root_bucket])
+    def __init__(self, unbucketed_range, unbucketed_data, total_count, suppressed_count):
+        self._unbucketed = {
+            'range': unbucketed_range,
+            'data': unbucketed_data,
+            'suppressed': suppressed_count
         }
+        first_bucket = bu.estimate_bucket_size(unbucketed_range, total_count)
+        self._to_explore = [b for b in bu.buckets_with_base(
+            TREE_BASES) if b < first_bucket]
 
-    def levels_below(self, level):
-        '''For determining the next appropriate bucket size(s)
-        '''
-        return (bs for bs in bu.buckets_smaller_than(level) if bu.base(bs) != bu.base(self._root_bucket_size))
+        self._to_explore.append(first_bucket)
+        self._explored_buckets = {}
 
-    def next_level(self):
-        smallest_level_so_far = min(self._buckets_by_level.keys())
-        return next(self.levels_below(smallest_level_so_far))
+    def next_levels(self, depth):
+        return self._to_explore[-depth:]
 
     def buckets_at_level(self, level):
-        return self._buckets_by_level.get(level)
+        return self._explored_buckets.get(level).as_flat_list()
 
-    def root_bucket(self):
-        return self._buckets_by_level[self._root_bucket_size]
+    def bucket_levels(self):
+        return list(self._explored_buckets.keys())
 
-    def insert_query_result(self, bucket_size, metadata, buckets):
+    def insert_query_result(self, bucket_size, buckets, **kwargs):
         '''Insert the result of a bucketed query
 
         :param bucket_size: The bucket size at this level
         :metadata: A dict containing extra data about this level of buckets (eg. column labels, suppressed values)
-        :param buckets: Should be a list of (bucket_size, lower_bound, bucket_data) 
+        :param buckets: Should be a list of `Bucket`s
         '''
-        assert bucket_size < self._root_bucket_size, "Can't insert a bucket level above the root"
+        next_level = self._to_explore.pop()
+        assert bucket_size == next_level, f'Wrong bucket size, expected {next_level}, got {bucket_size}'
 
-        assert bucket_size < min(self._buckets_by_level.keys(
-        )), "Inserting a bucket level above the lowest level is not yet supported"
-
-        next_level = self.next_level()
-        assert bucket_size == next_level, f'Wrong bucket size, expected {next_level}'
-
+        metadata = dict(kwargs)
         bl = BucketLevel(bucket_size=bucket_size,
                          metadata=metadata, buckets=buckets)
 
-        self._buckets_by_level.update({bucket_size: bl})
+        self._explored_buckets.update({bucket_size: bl})
 
     def get_bucket(self, bucket):
         result = None
@@ -55,11 +57,12 @@ class BucketTree:
 
         return result
 
+    def get_buckets(self, levels):
+        if len(levels) == 0:
+            levels = self.bucket_levels()
+        return [bucket for level in levels for bucket in self.buckets_at_level(level)]
 
-# TODO:
-# - BucketLevel constructor to take `parent` argument
-# - If `parent` is None, fill in gaps with zero-count buckets
-# - Otherwise interpolate missing buckets from the parent.
+
 class BucketLevel:
     '''Container class for buckets of the same size
     '''
@@ -67,19 +70,19 @@ class BucketLevel:
     def __init__(self, *, bucket_size, buckets, metadata=None, parent_level=None):
         '''
         :param bucket_size: The bucket size at this level
-        :param metadata: Metadata associated with this bucket level 
-        :param buckets: Should be a list of Bucket
+        :param metadata: Metadata associated with this bucket level
+        :param buckets: Should be a list of `Bucket`s
         :param parent: If the parent is not provided, fill in gaps between buckets
-            with empty buckets (count = 0), otherwise interpolate missing buckets. 
+            with empty buckets (count = 0), otherwise interpolate missing buckets.
         '''
-        self.bucket_size = bucket_size
-        self.metadata = metadata
+        self._bucket_size = bucket_size
+        self._metadata = metadata
         if parent_level is None:
             fake_lo = min(bucket.lower_bound for bucket in buckets)
             fake_hi = max(bucket.upper_bound() for bucket in buckets)
             fake_count = sum(bucket.data.count for bucket in buckets)
             parent_level = [
-                Bucket(fake_hi - fake_lo, fake_lo, {'count': fake_count, 'min': fake_lo, 'max': fake_hi})]
+                Bucket(fake_hi - fake_lo, fake_lo, [fake_count, fake_lo, fake_hi], FakeData)]
 
         interpolated = []
         bucket_iter = iter(buckets)
@@ -88,34 +91,46 @@ class BucketLevel:
                 takewhile(lambda small: parent_bucket.contains(small), bucket_iter))
             interpolated += parent_bucket.interpolate_children(children)
 
-        self.buckets = dict([(bucket.lower_bound, bucket)
-                             for bucket in interpolated])
+        self._buckets = dict([(bucket.lower_bound, bucket)
+                              for bucket in interpolated])
 
     def get_bucket(self, bucket_size, lower_bound):
-        if bucket_size != self.bucket_size:
+        if bucket_size != self._bucket_size:
             return None
 
-        return self.buckets.get(lower_bound)
+        return self._buckets.get(lower_bound)
 
     def buckets_in_range(self, range_lo, range_hi):
-        return (bucket for (lower_bound, bucket) in self.buckets
+        return (bucket for (lower_bound, bucket) in self._buckets
                 if lower_bound >= range_lo and lower_bound < range_hi)
 
     def add_metadata(self, metadata):
-        self.metadata.update(metadata)
+        self._metadata.update(metadata)
+
+    def as_flat_list(self):
+        return [bucket.flatten() for bucket in self._buckets.values()]
 
     def __iter__(self):
-        return self.buckets.values()
+        return self._buckets.values()
+
+
+QueryData = namedtuple('QueryData', 'count count_noise min max avg')
+FakeData = namedtuple('FakeData', 'count min max')
+SyntheticData = namedtuple('SyntheticData', 'count')
+EmptyData = namedtuple('EmptyData', '')
 
 
 class Bucket:
     '''Container class for bucketed data
     '''
 
-    def __init__(self, bucket_size, lower_bound, bucket_data=None):
+    def __init__(self, bucket_size, lower_bound, bucket_data, data_wrapper=QueryData):
         self.size = bucket_size
         self.lower_bound = lower_bound
-        self.data = BucketData(bucket_data)
+        if bucket_data is not None:
+            self.data = data_wrapper(*bucket_data)
+        else:
+            self.data = EmptyData()
 
     def __eq__(self, other):
         return self.size == other.size and self.lower_bound == other.lower_bound
@@ -125,6 +140,26 @@ class Bucket:
 
     def __str__(self):
         return f'Bucket({self.lower_bound} - {self.lower_bound + self.size})'
+
+    def index(self):
+        return (self.size, self.lower_bound)
+
+    def upper_bound(self):
+        return self.lower_bound + self.size
+
+    def contains(self, other):
+        return self.lower_bound <= other.lower_bound and self.upper_bound() >= other.upper_bound()
+
+    def parent_index(self, parent_size):
+        # TODO: add some assertions / restrictions regarding buckets sizes
+        return (parent_size, (self.lower_bound // parent_size) * parent_size)
+
+    def child_indices(self, child_size):
+        # TODO: add some assertions / restrictions regarding buckets sizes
+        return [(child_size, i) for i in range(self.lower_bound, self.lower_bound + self.size, child_size)]
+
+    def flatten(self):
+        return [self.size, self.lower_bound, *self.data]
 
     def split_to_size(self, smaller_size):
         '''Split a bucket into multiple buckets of a smaller size
@@ -137,22 +172,15 @@ class Bucket:
             # return None to signal that the desired bucket size doesn't fit
             return None
 
-        upper_bound = self.lower_bound + self.size
-        return [Bucket(smaller_size, lower_bound) for lower_bound in range(lower_bound, upper_bound, smaller_size)]
+        return [Bucket(*index) for index in self.child_indices(smaller_size)]
 
-    def upper_bound(self):
-        return self.lower_bound + self.size
-
-    def contains(self, other):
-        return self.lower_bound >= other.lower_bound and self.upper_bound() <= other.upper_bound()
-
-    def interpolate_children(self, small_buckets: List[Bucket]):
-        '''Interpolate gaps in small buckets from a larger one. 
+    def interpolate_children(self, small_buckets):
+        '''Interpolate gaps in small buckets from a larger one.
         '''
         small_bucket_size = small_buckets[0].size
         assert self.size % small_bucket_size == 0, f'Bucket {self.size} does not divide exactly into buckets of size {small_bucket_size}'
 
-        small_buckets_expected_num = self.size / small_bucket_size
+        small_buckets_expected_num = int(self.size // small_bucket_size)
         if small_buckets_expected_num == len(small_buckets):
             return small_buckets
 
@@ -168,24 +196,9 @@ class Bucket:
             sum(bucket.data.count for bucket in small_buckets)
         count_per_bucket = missing_total / len(missing_lower_bounds)
 
-        synthetic_buckets = [Bucket(small_bucket_size, lower_bound, {
-                                    'count': count_per_bucket}) for lower_bound in missing_lower_bounds]
+        synthetic_buckets = [Bucket(small_bucket_size, lower_bound, [count_per_bucket], data_wrapper=SyntheticData)
+                             for lower_bound in missing_lower_bounds]
 
         small_buckets += synthetic_buckets
         small_buckets.sort(key=lambda bucket: bucket.lower_bound)
         return small_buckets
-
-
-class BucketData:
-    def __init__(self, bucket_data):
-        if type(bucket_data) == type([]):
-            self.count = sum([data['count'] for data in bucket_data])
-            self.min = min([data['min'] for data in bucket_data])
-            self.max = max([data['max'] for data in bucket_data])
-        else:
-            self.count = bucket_data['count']
-            self.min = bucket_data['min']
-            self.max = bucket_data['max']
-
-    def __str__(self):
-        return f'BucketData(count: {self.count}, min: {self.min}, max: {self.max})'
